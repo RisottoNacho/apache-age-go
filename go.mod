@@ -16,12 +16,12 @@
 //  * specific language governing permissions and limitations
 //  * under the License.
 //  */
-module github.com/rhizome-ai/apache-age-go
+module github.com/RisottoNacho/apache-age-go
 
 go 1.16
 
 require (
-	github.com/antlr/antlr4/runtime/Go/antlr v0.0.0-20210521184019-c5ad59b459ec
+	github.com/antlr/antlr4/runtime/Go/antlr/v4 v4.0.0-20230321174746-8dcc6526cfb1
 	github.com/lib/pq v1.10.2
 	github.com/stretchr/testify v1.7.0
 )

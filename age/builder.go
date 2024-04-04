@@ -25,8 +25,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/RisottoNacho/apache-age-go/parser"
 	"github.com/antlr/antlr4/runtime/Go/antlr"
-	"github.com/rhizome-ai/apache-age-go/parser"
 )
 
 const MaxUint = ^uint(0)

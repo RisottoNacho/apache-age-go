@@ -22,7 +22,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/rhizome-ai/apache-age-go/age"
+	"github.com/RisottoNacho/apache-age-go/age"
 )
 
 // Do cypher query to AGE with database/sql Tx API transaction conrol

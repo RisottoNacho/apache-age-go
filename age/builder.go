@@ -26,7 +26,7 @@ import (
 	"strings"
 
 	"github.com/RisottoNacho/apache-age-go/parser"
-	"github.com/antlr/antlr4/runtime/Go/antlr"
+	"github.com/antlr/antlr4/runtime/Go/antlr/v4"
 )
 
 const MaxUint = ^uint(0)
@@ -40,8 +40,8 @@ type Unmarshaller interface {
 
 type AGUnmarshaler struct {
 	Unmarshaller
-	ageParser   *parser.AgtypeParser
-	visitor     parser.AgtypeVisitor
+	ageParser   *parser.AgeParser
+	visitor     parser.AgeVisitor
 	errListener *AGErrorListener
 	vcache      map[int64]interface{}
 }
@@ -49,7 +49,7 @@ type AGUnmarshaler struct {
 func NewAGUnmarshaler() *AGUnmarshaler {
 	vcache := make(map[int64]interface{})
 
-	m := &AGUnmarshaler{ageParser: parser.NewAgtypeParser(nil),
+	m := &AGUnmarshaler{ageParser: parser.NewAgeParser(nil),
 		visitor:     &UnmarshalVisitor{vcache: vcache},
 		errListener: NewAGErrorListener(),
 		vcache:      vcache,
@@ -64,10 +64,10 @@ func (p *AGUnmarshaler) unmarshal(text string) (Entity, error) {
 		return NewSimpleEntity(nil), nil
 	}
 	input := antlr.NewInputStream(text)
-	lexer := parser.NewAgtypeLexer(input)
+	lexer := parser.NewAgeLexer(input)
 	stream := antlr.NewCommonTokenStream(lexer, 0)
 	p.ageParser.SetInputStream(stream)
-	tree := p.ageParser.AgType()
+	tree := p.ageParser.Ageout()
 	rst := tree.Accept(p.visitor)
 
 	if len(p.errListener.errList) > 0 {
@@ -77,8 +77,7 @@ func (p *AGUnmarshaler) unmarshal(text string) (Entity, error) {
 			errs[idx] = re.GetMessage()
 			fmt.Println(re)
 		}
-		p.errListener.ClearErrs()
-
+		p.errListener.clearErrs()
 		ape = &AgeParseError{msg: "Cypher query:" + text, errors: errs}
 
 		return nil, ape
@@ -104,20 +103,19 @@ func (el *AGErrorListener) SyntaxError(recognizer antlr.Recognizer, offendingSym
 	el.errList = append(el.errList, e)
 }
 
-func (el *AGErrorListener) GetErrs() []antlr.RecognitionException {
+func (el *AGErrorListener) getErrs() []antlr.RecognitionException {
 	return el.errList
 }
-func (el *AGErrorListener) ClearErrs() {
+func (el *AGErrorListener) clearErrs() {
 	el.errList = []antlr.RecognitionException{}
 }
 
 type UnmarshalVisitor struct {
-	parser.AgtypeVisitor
+	parser.AgeVisitor
 	vcache map[int64]interface{}
 }
 
 func (v *UnmarshalVisitor) Visit(tree antlr.ParseTree) interface{} { return nil }
-
 func (v *UnmarshalVisitor) VisitChildren(node antlr.RuleNode) interface{} {
 	var rtn interface{}
 	for _, c := range node.GetChildren() {
@@ -126,193 +124,101 @@ func (v *UnmarshalVisitor) VisitChildren(node antlr.RuleNode) interface{} {
 	}
 	return rtn
 }
-
 func (v *UnmarshalVisitor) VisitTerminal(node antlr.TerminalNode) interface{} { return nil }
 func (v *UnmarshalVisitor) VisitErrorNode(node antlr.ErrorNode) interface{}   { return nil }
-func (v *UnmarshalVisitor) VisitAgType(ctx *parser.AgTypeContext) interface{} {
-	agv := ctx.AgValue()
-	if agv != nil {
-		return agv.Accept(v)
-	}
-	return nil
-}
-
-func (v *UnmarshalVisitor) VisitAgValue(ctx *parser.AgValueContext) interface{} {
-	annoCtx := ctx.TypeAnnotation()
-	valueCtx := ctx.Value()
-
-	if annoCtx != nil {
-		annoStr := annoCtx.(*parser.TypeAnnotationContext).IDENT().GetText()
-		value, err := v.handleAnnotatedValue(annoStr, valueCtx)
-		if err != nil {
-			panic(err)
-		}
-
-		return value
-	} else {
-		return valueCtx.Accept(v)
-	}
-}
-
-// Visit a parse tree produced by AgtypeParser#value.
-func (v *UnmarshalVisitor) VisitValue(ctx *parser.ValueContext) interface{} {
+func (v *UnmarshalVisitor) VisitAgeout(ctx *parser.AgeoutContext) interface{} {
 	rtn := v.VisitChildren(ctx)
 	return rtn
 }
 
-func (v *UnmarshalVisitor) handleAnnotatedValue(anno string, ctx antlr.ParserRuleContext) (interface{}, error) {
-	if anno == "numeric" {
-		numStr := ctx.GetText()
-		if strings.Contains(numStr, ".") {
-			bi := new(big.Float)
-			bi, ok := bi.SetString(numStr)
-			if !ok {
-				return nil, &AgeParseError{msg: "Parse big float " + numStr}
-			}
-			return bi, nil
-		} else {
-			bi := new(big.Int)
-			bi, ok := bi.SetString(numStr, 10)
-			if !ok {
-				return nil, &AgeParseError{msg: "Parse big int " + numStr}
-			}
-			return bi, nil
-		}
-	} else if anno == "vertex" {
-		dict := ctx.Accept(v).(map[string]interface{})
-		vid, ok := dict["id"].(int64)
-		if !ok {
-			return nil, &AgeParseError{msg: "Vertex id is nil. "}
-		}
-		vertex, ok := v.vcache[vid].(*Vertex)
+// Visit a parse tree produced by AgeParser#vertex.
+func (v *UnmarshalVisitor) VisitVertex(ctx *parser.VertexContext) interface{} {
+	propCtx := ctx.Properties()
+	props := propCtx.Accept(v).(map[string]interface{})
+	// fmt.Println(" * VisitVertex:", props)
+	vid := int64(props["id"].(int64))
+	vertex, ok := v.vcache[vid]
 
-		if !ok {
-			vertex = NewVertex(vid, dict["label"].(string), dict["properties"].(map[string]interface{}))
-			v.vcache[vid] = vertex
-		}
-
-		return vertex, nil
-	} else if anno == "edge" {
-		dict := ctx.Accept(v).(map[string]interface{})
-		edge := NewEdge(int64(dict["id"].(int64)), dict["label"].(string),
-			int64(dict["start_id"].(int64)), int64(dict["end_id"].(int64)),
-			dict["properties"].(map[string]interface{}))
-
-		return edge, nil
-	} else if anno == "path" {
-		arr := ctx.Accept(v).([]interface{})
-		entities := []Entity{}
-
-		for _, child := range arr {
-			switch child.(type) {
-			case *Vertex:
-				entities = append(entities, child.(Entity))
-			case *Edge:
-				entities = append(entities, child.(Entity))
-			default:
-			}
-		}
-
-		path := NewPath(entities)
-		return path, nil
+	if !ok {
+		vertex = NewVertex(vid, props["label"].(string), props["properties"].(map[string]interface{}))
+		v.vcache[vid] = vertex
 	}
-	return ctx.Accept(v), nil
+
+	return vertex
 }
 
-func (v *UnmarshalVisitor) VisitStringValue(ctx *parser.StringValueContext) interface{} {
-	txt := ctx.GetText()
-	txt, _ = strconv.Unquote(txt)
-	return txt
+// Visit a parse tree produced by AgeParser#edge.
+func (v *UnmarshalVisitor) VisitEdge(ctx *parser.EdgeContext) interface{} {
+	propCtx := ctx.Properties()
+	props := propCtx.Accept(v).(map[string]interface{})
+	// fmt.Println(" * VisitEdge:", props)
+
+	edge := NewEdge(int64(props["id"].(int64)), props["label"].(string),
+		int64(props["start_id"].(int64)), int64(props["end_id"].(int64)),
+		props["properties"].(map[string]interface{}))
+
+	return edge
 }
 
-func (v *UnmarshalVisitor) VisitIntegerValue(ctx *parser.IntegerValueContext) interface{} {
-	val, err := strconv.ParseInt(ctx.INTEGER().GetText(), 10, 64)
-	if err != nil {
-		panic(err)
-	}
-	return val
-}
+// Visit a parse tree produced by AgeParser#path.
+func (v *UnmarshalVisitor) VisitPath(ctx *parser.PathContext) interface{} {
+	entities := []Entity{}
 
-// Visit a parse tree produced by AgtypeParser#FloatValue.
-func (v *UnmarshalVisitor) VisitFloatValue(ctx *parser.FloatValueContext) interface{} {
-	fCtx := ctx.GetChild(0).(*parser.FloatLiteralContext)
-	return fCtx.Accept(v)
-}
-
-func (v *UnmarshalVisitor) VisitFloatLiteral(ctx *parser.FloatLiteralContext) interface{} {
-	c := ctx.GetChild(0)
-	text := ctx.GetText()
-	tokenType := c.(antlr.TerminalNode).GetSymbol().GetTokenType()
-
-	switch tokenType {
-	case parser.AgtypeParserRegularFloat:
-		val, err := strconv.ParseFloat(text, 64)
-		if err != nil {
-			panic(err)
-		}
-		return val
-	case parser.AgtypeParserExponentFloat:
-		val, err := strconv.ParseFloat(text, 64)
-		if err != nil {
-			panic(err)
-		}
-		return val
-	default:
-		switch text {
-		case "NaN":
-			return math.NaN()
-		case "-Infinity":
-			return math.Inf(-1)
-		case "Infinity":
-			return math.Inf(1)
+	for _, child := range ctx.GetChildren() {
+		switch child.(type) {
+		case *parser.VertexContext:
+			v := child.(*parser.VertexContext).Accept(v)
+			// fmt.Println(v)
+			entities = append(entities, v.(Entity))
+		case *parser.EdgeContext:
+			e := child.(*parser.EdgeContext).Accept(v)
+			// fmt.Println(e)
+			entities = append(entities, e.(Entity))
 		default:
-			panic(&AgeParseError{msg: "Unknown float expression:" + text})
 		}
+	}
+
+	path := NewPath(entities)
+	return path
+}
+
+// Visit a parse tree produced by AgeParser#value.
+func (v *UnmarshalVisitor) VisitValue(ctx *parser.ValueContext) interface{} {
+	child := ctx.GetChild(0)
+	switch child.(type) {
+	case *antlr.TerminalNodeImpl:
+		rtn, err := unmarshalTerm(child.(*antlr.TerminalNodeImpl))
+		if err != nil {
+			panic(err)
+		}
+		return rtn
+	default:
+		return child.(antlr.ParserRuleContext).Accept(v)
 	}
 }
 
-func (v *UnmarshalVisitor) VisitTrueBoolean(ctx *parser.TrueBooleanContext) interface{} {
-	return true
-}
-
-func (v *UnmarshalVisitor) VisitFalseBoolean(ctx *parser.FalseBooleanContext) interface{} {
-	return false
-}
-
-func (v *UnmarshalVisitor) VisitNullValue(ctx *parser.NullValueContext) interface{} {
-	return nil
-}
-
-// Visit a parse tree produced by AgtypeParser#ObjectValue.
-func (v *UnmarshalVisitor) VisitObjectValue(ctx *parser.ObjectValueContext) interface{} {
-	objCtx := ctx.GetChild(0).(*parser.ObjContext)
-	return objCtx.Accept(v)
-}
-
-func (v *UnmarshalVisitor) VisitObj(ctx *parser.ObjContext) interface{} {
+// Visit a parse tree produced by AgeParser#properties.
+func (v *UnmarshalVisitor) VisitProperties(ctx *parser.PropertiesContext) interface{} {
 	props := make(map[string]interface{})
 	for _, pairCtx := range ctx.AllPair() {
 		pairCtx.Accept(v)
 		pair := pairCtx.(*parser.PairContext)
 		key := strings.Trim(pair.STRING().GetText(), "\"")
-		value := pair.AgValue().Accept(v)
+		// fmt.Println("Pair KEY:", key)
+		value := pair.Value().Accept(v)
 		props[key] = value
 	}
 
 	return props
 }
 
+// Visit a parse tree produced by AgeParser#pair.
 func (v *UnmarshalVisitor) VisitPair(ctx *parser.PairContext) interface{} {
 	return nil
 }
 
-func (v *UnmarshalVisitor) VisitArrayValue(ctx *parser.ArrayValueContext) interface{} {
-	arrCtx := ctx.GetChild(0).(*parser.ArrayContext)
-	return arrCtx.Accept(v)
-}
-
-// Visit a parse tree produced by AgtypeParser#array.
-func (v *UnmarshalVisitor) VisitArray(ctx *parser.ArrayContext) interface{} {
+// Visit a parse tree produced by AgeParser#arr.
+func (v *UnmarshalVisitor) VisitArr(ctx *parser.ArrContext) interface{} {
 	var arr []interface{}
 	for _, child := range ctx.GetChildren() {
 		switch child.(type) {
@@ -327,49 +233,55 @@ func (v *UnmarshalVisitor) VisitArray(ctx *parser.ArrayContext) interface{} {
 	return arr
 }
 
-/*
-
-   # Visit a parse tree produced by AgtypeParser#TrueBoolean.
-   def visitTrueBoolean(self, ctx:AgtypeParser.TrueBooleanContext):
-       return True
-
-
-   # Visit a parse tree produced by AgtypeParser#FalseBoolean.
-   def visitFalseBoolean(self, ctx:AgtypeParser.FalseBooleanContext):
-       return False
-
-
-   # Visit a parse tree produced by AgtypeParser#NullValue.
-   def visitNullValue(self, ctx:AgtypeParser.NullValueContext):
-       return None
-
-
-   # Visit a parse tree produced by AgtypeParser#obj.
-   def visitObj(self, ctx:AgtypeParser.ObjContext):
-       obj = dict()
-       for c in ctx.getChildren():
-           if isinstance(c, AgtypeParser.PairContext):
-               namVal = self.visitPair(c)
-               name = namVal[0]
-               valCtx = namVal[1]
-               val = valCtx.accept(self)
-               obj[name] = val
-       return obj
-
-
-   # Visit a parse tree produced by AgtypeParser#pair.
-   def visitPair(self, ctx:AgtypeParser.PairContext):
-       self.visitChildren(ctx)
-       return (ctx.STRING().getText().strip('"') , ctx.agValue())
-
-
-   # Visit a parse tree produced by AgtypeParser#array.
-   def visitArray(self, ctx:AgtypeParser.ArrayContext):
-       li = list()
-       for c in ctx.getChildren():
-           if not isinstance(c, TerminalNode):
-               val = c.accept(self)
-               li.append(val)
-       return li
-
-*/
+func unmarshalTerm(ctx *antlr.TerminalNodeImpl) (interface{}, error) {
+	txt := ctx.GetText()
+	switch ctx.GetSymbol().GetTokenType() {
+	case parser.AgeLexerSTRING:
+		return strings.Trim(txt, "\""), nil
+	case parser.AgeLexerNUMERIC:
+		numStr := txt[:len(txt)-9]
+		if strings.Contains(numStr, ".") {
+			bi := new(big.Float)
+			bi, ok := bi.SetString(numStr)
+			if !ok {
+				return nil, &AgeParseError{msg: "Parse big float " + txt}
+			}
+			return bi, nil
+		} else {
+			bi := new(big.Int)
+			bi, ok := bi.SetString(numStr, 10)
+			if !ok {
+				return nil, &AgeParseError{msg: "Parse big int " + txt}
+			}
+			return bi, nil
+		}
+	case parser.AgeLexerNUMBER:
+		if strings.Contains(txt, ".") || strings.Contains(txt, "e-") {
+			return strconv.ParseFloat(txt, 64)
+		} else {
+			return strconv.ParseInt(txt, 10, 64)
+		}
+	case parser.AgeLexerFLOAT_EXPR:
+		switch txt {
+		case "NaN":
+			return math.NaN(), nil
+		case "-Infinity":
+			return math.Inf(-1), nil
+		case "Infinity":
+			return math.Inf(1), nil
+		default:
+			return nil, &AgeParseError{msg: "Unknown float expression" + txt}
+		}
+	case parser.AgeLexerBOOL:
+		s, err := strconv.ParseBool(txt)
+		if err != nil {
+			return nil, err
+		} else {
+			return s, nil
+		}
+	case parser.AgeLexerNULL:
+		return nil, nil
+	default:
+		return nil, nil
+	}
+}

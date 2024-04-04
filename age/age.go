@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"reflect"
 )
 
 // GetReady prepare AGE extension
@@ -75,19 +76,24 @@ func execCypher(cursorProvider CursorProvider, tx *sql.Tx, graphName string, col
 
 	cypherStmt := fmt.Sprintf(cypher, args...)
 
-	buf.WriteString("SELECT * from cypher('")
-	buf.WriteString(graphName)
-	buf.WriteString("', $$ ")
-	buf.WriteString(cypherStmt)
-	buf.WriteString(" $$)")
-	buf.WriteString(" as (")
-	buf.WriteString("v0 agtype")
+	buf.WriteString("SELECT * from cypher(NULL,NULL) as (v0 agtype")
+
 	for i := 1; i < columnCount; i++ {
 		buf.WriteString(fmt.Sprintf(", v%d agtype", i))
 	}
-	buf.WriteString(")")
+	buf.WriteString(");")
 
 	stmt := buf.String()
+
+	// Pass in the graph name and cypher statement via parameters to prepare
+	// the cypher function call for session info.
+
+	prepare_stmt := "SELECT * FROM age_prepare_cypher($1, $2);"
+	_, perr := tx.Exec(prepare_stmt, graphName, cypherStmt)
+	if perr != nil {
+		fmt.Println(prepare_stmt + " " + graphName + " " + cypher)
+		return nil, perr
+	}
 
 	if columnCount == 0 {
 		_, err := tx.Exec(stmt)
@@ -119,6 +125,19 @@ func ExecCypher(tx *sql.Tx, graphName string, columnCount int, cypher string, ar
 	return cypherCursor, err
 }
 
+// ExecCypherMap
+// CREATE , DROP ....
+// MATCH .... RETURN ....
+// CREATE , DROP .... RETURN ...
+func ExecCypherMap(tx *sql.Tx, graphName string, columnCount int, cypher string, args ...interface{}) (*CypherMapCursor, error) {
+	cursor, err := execCypher(NewCypherMapCursor, tx, graphName, columnCount, cypher, args...)
+	var cypherMapCursor *CypherMapCursor
+	if cursor != nil {
+		cypherMapCursor = cursor.(*CypherMapCursor)
+	}
+	return cypherMapCursor, err
+}
+
 type Age struct {
 	db        *sql.DB
 	graphName string
@@ -129,7 +148,8 @@ type AgeTx struct {
 	tx  *sql.Tx
 }
 
-/**
+/*
+*
 @param dsn host=127.0.0.1 port=5432 dbname=postgres user=postgres password=agens sslmode=disable
 */
 func ConnectAge(graphName string, dsn string) (*Age, error) {
@@ -219,6 +239,10 @@ func (a *AgeTx) ExecCypher(columnCount int, cypher string, args ...interface{}) 
 	return ExecCypher(a.tx, a.age.graphName, columnCount, cypher, args...)
 }
 
+func (a *AgeTx) ExecCypherMap(columnCount int, cypher string, args ...interface{}) (*CypherMapCursor, error) {
+	return ExecCypherMap(a.tx, a.age.graphName, columnCount, cypher, args...)
+}
+
 type CypherCursor struct {
 	Cursor
 	columnCount int
@@ -231,13 +255,18 @@ func NewCypherCursor(columnCount int, rows *sql.Rows) Cursor {
 }
 
 func (c *CypherCursor) Next() bool {
+	// Added check for nil rows
+	if c.rows == nil {
+		return false
+	}
+
 	return c.rows.Next()
 }
 
 func (c *CypherCursor) GetRow() ([]Entity, error) {
 	var gstrs = make([]interface{}, c.columnCount)
 	for i := 0; i < c.columnCount; i++ {
-		gstrs[i] = new(sql.NullString)
+		gstrs[i] = new(string)
 	}
 
 	err := c.rows.Scan(gstrs...)
@@ -247,17 +276,13 @@ func (c *CypherCursor) GetRow() ([]Entity, error) {
 
 	entArr := make([]Entity, c.columnCount)
 	for i := 0; i < c.columnCount; i++ {
-		gstr := gstrs[i].(*sql.NullString)
-		if gstr.Valid {
-			e, err := c.unmarshaler.unmarshal(gstr.String)
-			if err != nil {
-				fmt.Println(i, ">>", gstr)
-				return nil, err
-			}
-			entArr[i] = e
-		} else {
-			entArr[i] = nil
+		gstr := gstrs[i].(*string)
+		e, err := c.unmarshaler.unmarshal(*gstr)
+		if err != nil {
+			fmt.Println(i, ">>", gstr)
+			return nil, err
 		}
+		entArr[i] = e
 	}
 
 	return entArr, nil
@@ -265,4 +290,40 @@ func (c *CypherCursor) GetRow() ([]Entity, error) {
 
 func (c *CypherCursor) Close() error {
 	return c.rows.Close()
+}
+
+type CypherMapCursor struct {
+	CypherCursor
+	mapper *AGMapper
+}
+
+func NewCypherMapCursor(columnCount int, rows *sql.Rows) Cursor {
+	mapper := NewAGMapper(make(map[string]reflect.Type))
+	pcursor := CypherCursor{columnCount: columnCount, rows: rows, unmarshaler: mapper}
+	return &CypherMapCursor{CypherCursor: pcursor, mapper: mapper}
+}
+
+func (c *CypherMapCursor) PutType(label string, tp reflect.Type) {
+	c.mapper.PutType(label, tp)
+}
+
+func (c *CypherMapCursor) GetRow() ([]interface{}, error) {
+	entities, err := c.CypherCursor.GetRow()
+
+	if err != nil {
+		return nil, fmt.Errorf("CypherMapCursor.GetRow:: %s", err)
+	}
+
+	elArr := make([]interface{}, c.columnCount)
+
+	for i := 0; i < c.columnCount; i++ {
+		ent := entities[i]
+		if ent.GType() == G_MAP_PATH {
+			elArr[i] = ent
+		} else {
+			elArr[i] = ent.(*SimpleEntity).Value()
+		}
+	}
+
+	return elArr, nil
 }
